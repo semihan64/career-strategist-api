@@ -186,7 +186,10 @@ Return ONLY the JSON object. Nothing else.`;
       });
 
       res.writeHead(result.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(result.body));
+      const text = result.body?.content?.[0]?.text || "{}";
+
+res.writeHead(200, { "Content-Type": "application/json" });
+res.end(text);
     } catch (err) {
       console.error("Server error:", err.message);
       res.writeHead(500, { "Content-Type": "application/json" });
