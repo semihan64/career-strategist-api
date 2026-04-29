@@ -183,16 +183,23 @@ const server = http.createServer(async (req, res) => {
   req.on("end", async () => {
     const rawBody = Buffer.concat(chunks).toString("utf8");
 
+    console.log("Body length:", rawBody.length);
+    console.log("Body preview:", rawBody.slice(0, 100));
+
     let cv, jd;
     try {
       ({ cv, jd } = JSON.parse(rawBody));
-    } catch {
+    } catch (parseErr) {
+      console.error("JSON parse error:", parseErr.message);
+      console.error("Raw body sample:", rawBody.slice(0, 200));
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON body" }));
+      res.end(JSON.stringify({ error: "Invalid JSON body: " + parseErr.message }));
       return;
     }
 
-    // Fix 6: validate fields present
+    console.log("cv length:", (cv || "").length, "jd length:", (jd || "").length);
+
+    // validate fields present
     if (!cv || !cv.trim() || !jd || !jd.trim()) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Missing cv or jd fields" }));
