@@ -175,22 +175,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Read body with size cap (Fix 6: reject oversized raw payloads)
-  let rawBody = "";
-  const MAX_BODY = 64 * 1024; // 64KB hard cap
-  let bodyTooLarge = false;
+  // Read body using Buffer chunks to handle encoding correctly
+  const chunks = [];
 
-  req.on("data", chunk => {
-    rawBody += chunk;
-    if (rawBody.length > MAX_BODY) bodyTooLarge = true;
-  });
+  req.on("data", chunk => chunks.push(chunk));
 
   req.on("end", async () => {
-    if (bodyTooLarge) {
-      res.writeHead(413, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Payload too large" }));
-      return;
-    }
+    const rawBody = Buffer.concat(chunks).toString("utf8");
 
     let cv, jd;
     try {
