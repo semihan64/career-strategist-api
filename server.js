@@ -105,8 +105,8 @@ const server = http.createServer((req, res) => {
 
     try {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      cv = (body.cv || "").slice(0, 7000).trim();
-      jd = (body.jd || "").slice(0, 9000).trim();
+      cv = (body.cv || "").trim();
+jd = (body.jd || "").trim();
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Invalid JSON" }));
