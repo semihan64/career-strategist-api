@@ -2,10 +2,13 @@
   "name": "career-strategist-api",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "start": "node server.js"
+},
+"engines": {
+  "node": ">=20"
+},
   "repository": {
     "type": "git",
     "url": "git+https://github.com/semihan64/career-strategist-api.git"
