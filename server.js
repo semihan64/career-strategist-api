@@ -104,7 +104,11 @@ const server = http.createServer((req, res) => {
     let cv, jd;
 
     try {
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+console.log("RAW BODY:", Buffer.concat(chunks).toString("utf8"));
+console.log("PARSED BODY:", body);
+console.log("CV RECEIVED LENGTH:", (body.cv || "").length);
+console.log("JD RECEIVED LENGTH:", (body.jd || "").length);
       cv = (body.cv || "").trim();
 jd = (body.jd || "").trim();
     } catch {
