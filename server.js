@@ -1,96 +1,20 @@
 const http = require("http");
 const https = require("https");
 
-// ── Config ────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 
-if (!API_KEY) {
-  console.error("ERROR: Set ANTHROPIC_API_KEY environment variable first.");
-  process.exit(1);
-}
+if (!API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
 
-// ── Rate limiter: 10 req / IP / hour ─────────────────────────
-const rateLimitMap = new Map();
-const RATE_LIMIT = 10;
-const RATE_WINDOW_MS = 60 * 60 * 1000;
-
+// Rate limiter
+const rateMap = new Map();
 function isRateLimited(ip) {
   const now = Date.now();
-  const entry = rateLimitMap.get(ip) || { count: 0, windowStart: now };
-  if (now - entry.windowStart > RATE_WINDOW_MS) {
-    entry.count = 0;
-    entry.windowStart = now;
-  }
-  entry.count++;
-  rateLimitMap.set(ip, entry);
-  return entry.count > RATE_LIMIT;
-}
-
-// ── CORS ──────────────────────────────────────────────────────
-function setCORS(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-// ── Fix 3: extract clean JSON text from Claude response ───────
-function extractCleanJson(responseBody) {
-  // Always pull text blocks only
-  const content = responseBody.content || [];
-  const raw = content
-    .filter(b => b.type === "text")
-    .map(b => b.text || "")
-    .join("");
-
-  if (!raw) return null;
-
-  // Strip markdown wrappers
-  let clean = raw
-    .replace(/^```(?:json)?\s*/gm, "")
-    .replace(/^```\s*$/gm, "")
-    .trim();
-
-  // Find outermost JSON object
-  const s = clean.indexOf("{");
-  const e = clean.lastIndexOf("}");
-  if (s === -1 || e === -1) return null;
-
-  return clean.slice(s, e + 1);
-}
-
-// ── Proxy call to Anthropic ───────────────────────────────────
-function callAnthropic(body) {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body);
-    const options = {
-      hostname: "api.anthropic.com",
-      path: "/v1/messages",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(payload),
-        "x-api-key": API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", chunk => (data += chunk));
-      res.on("end", () => {
-        try {
-          resolve({ status: res.statusCode, body: JSON.parse(data) });
-        } catch {
-          reject(new Error("Failed to parse Anthropic response"));
-        }
-      });
-    });
-
-    req.on("error", reject);
-    req.write(payload);
-    req.end();
-  });
+  const e = rateMap.get(ip) || { count: 0, start: now };
+  if (now - e.start > 3600000) { e.count = 0; e.start = now; }
+  e.count++;
+  rateMap.set(ip, e);
+  return e.count > 10;
 }
 
 const SYSTEM_PROMPT = `You are an AI Career Strategist. You think like a senior hiring manager and insider recruiter, not a career coach. Direct, specific, honest. Never generic.
@@ -107,13 +31,12 @@ RULES FOR NAME USE:
 - If no name found, set candidateName to "" and use neutral tone throughout
 
 JSON keys:
-
-candidateName: string, extracted from CV, or empty string
+candidateName: string
 matchScore: integer 0-100
 skillsLevel: "High" or "Medium" or "Low"
 domainLevel: "Strong" or "Moderate" or "Weak"
 seniorityLevel: "Aligned" or "Slight stretch" or "Mismatch"
-mindsetBanner: 2-3 sentences. Warm, direct, specific. Use name if known. No dashes.
+mindsetBanner: 2-3 sentences. Warm, direct, specific. No dashes. No em dashes. No AI phrasing. Short sentences.
 whyFit: exactly 2 bullets separated by | character
 edge: 1 sentence. Clearest differentiator.
 hiringManagerCares: 2 bullets separated by |
@@ -146,13 +69,13 @@ exampleAnswer: 110-140 words. Conversational. Sounds like a real person.
 
 Return ONLY the JSON object. Nothing else.`;
 
-// ── Server ────────────────────────────────────────────────────
-const server = http.createServer(async (req, res) => {
-  setCORS(res);
+const server = http.createServer((req, res) => {
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    res.writeHead(204); res.end(); return;
-  }
+  if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -166,89 +89,119 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Rate limiting
-  const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim()
-    || req.socket.remoteAddress;
+  // Rate limit
+  const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress;
   if (isRateLimited(ip)) {
     res.writeHead(429, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "RATE_LIMITED" }));
     return;
   }
 
-  // Read body using Buffer chunks to handle encoding correctly
+  // Read body
   const chunks = [];
-
   req.on("data", chunk => chunks.push(chunk));
-
-  req.on("end", async () => {
-    const rawBody = Buffer.concat(chunks).toString("utf8");
-
-    console.log("Body length:", rawBody.length);
-    console.log("Body preview:", rawBody.slice(0, 100));
-
+  req.on("end", () => {
     let cv, jd;
+
     try {
-      ({ cv, jd } = JSON.parse(rawBody));
-    } catch (parseErr) {
-      console.error("JSON parse error:", parseErr.message);
-      console.error("Raw body sample:", rawBody.slice(0, 200));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      cv = (body.cv || "").slice(0, 7000).trim();
+      jd = (body.jd || "").slice(0, 9000).trim();
+    } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON body: " + parseErr.message }));
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
       return;
     }
 
-    console.log("cv length:", (cv || "").length, "jd length:", (jd || "").length);
-
-    // validate fields present
-    if (!cv || !cv.trim() || !jd || !jd.trim()) {
+    if (!cv || !jd) {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Missing cv or jd fields" }));
+      res.end(JSON.stringify({ error: "Missing cv or jd" }));
       return;
     }
 
-    // Fix 1: backend-side size guard (frontend already trims, this is a safety net)
-    const safeCv = cv.slice(0, 7000);
-    const safeJd = jd.slice(0, 9000);
+    // Call Anthropic
+    const payload = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 2500,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: `CANDIDATE CV:\n${cv}\n\nJOB DESCRIPTION:\n${jd}` }]
+    });
 
-    try {
-      const result = await callAnthropic({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 2500,
-        system: SYSTEM_PROMPT,
-        messages: [{
-          role: "user",
-          content: `${safeCv}\n\n${safeJd}`,
-        }],
+    const options = {
+      hostname: "api.anthropic.com",
+      path: "/v1/messages",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        "x-api-key": API_KEY,
+        "anthropic-version": "2023-06-01"
+      }
+    };
+
+    const apiReq = https.request(options, apiRes => {
+      const parts = [];
+      apiRes.on("data", chunk => parts.push(chunk));
+      apiRes.on("end", () => {
+        try {
+          const data = JSON.parse(Buffer.concat(parts).toString("utf8"));
+
+          if (apiRes.statusCode === 429) {
+            res.writeHead(429, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "RATE_LIMITED" }));
+            return;
+          }
+
+          if (apiRes.statusCode !== 200) {
+            res.writeHead(apiRes.statusCode, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: data.error?.message || "API error" }));
+            return;
+          }
+
+          // Extract and clean JSON from Claude response
+          const raw = (data.content || [])
+            .filter(b => b.type === "text")
+            .map(b => b.text || "")
+            .join("");
+
+          const stripped = raw
+            .split("\n")
+            .filter(line => !line.trim().startsWith("```"))
+            .join("\n")
+            .trim();
+
+          const start = stripped.indexOf("{");
+          const end = stripped.lastIndexOf("}");
+
+          if (start === -1 || end === -1) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "No JSON in response" }));
+            return;
+          }
+
+          const clean = stripped.slice(start, end + 1);
+
+          // Return clean JSON string in result field
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ result: clean }));
+
+        } catch (e) {
+          console.error("Parse error:", e.message);
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Failed to parse API response" }));
+        }
       });
+    });
 
-      // Fix 3: surface Anthropic rate limit
-      if (result.status === 429) {
-        res.writeHead(429, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "RATE_LIMITED" }));
-        return;
-      }
-
-      // Fix 3: extract clean JSON from Claude response on the backend
-      const cleanJson = extractCleanJson(result.body);
-
-      if (cleanJson) {
-        // Return clean JSON string directly — frontend just needs to parse it
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ result: cleanJson }));
-      } else {
-        // Fall back to forwarding raw body so frontend can try
-        res.writeHead(result.status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(result.body));
-      }
-
-    } catch (err) {
-      console.error("Server error:", err.message);
+    apiReq.on("error", e => {
+      console.error("API request error:", e.message);
       res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Internal server error" }));
-    }
+      res.end(JSON.stringify({ error: "Failed to reach Anthropic" }));
+    });
+
+    apiReq.write(payload);
+    apiReq.end();
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Career Strategist proxy running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Perceive backend running on port ${PORT}`));
