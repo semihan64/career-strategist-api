@@ -73,7 +73,7 @@ whyFit: 2 specific bullets separated by | — reference actual CV content
 edge: 1 sentence naming their specific differentiator vs other candidates
 hiringManagerCares: 2 bullets separated by | — what the hiring manager will actually focus on
 redFlags: 2 bullets separated by | — name the actual gaps, not generic warnings
-pitch: 55-70 words. Conversational. Sounds like this specific person.
+pitch: 55-70 words. Written in FIRST PERSON — use "I", "I've", "I'm", "My". Never "You" or "Your". Conversational. Sounds like something this person would actually say out loud.
 positioning: "A [specific role identity] with [specific strength] in [specific domain]"
 fitVerdict: "Strong fit" or "Stretch" or "Low probability"
 fitReason: one sharp specific line under 15 words
