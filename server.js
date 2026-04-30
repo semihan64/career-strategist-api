@@ -69,6 +69,95 @@ exampleAnswer: 110-140 words. Conversational. Sounds like a real person.
 
 Return ONLY the JSON object. Nothing else.`;
 
+
+const REFINE_PROMPT = `You are refining the output of an AI career analysis product called Perceive.
+Your job is to improve tone, clarity, personalization, and readability.
+
+VOICE:
+- Sounds like a sharp hiring manager, not a coach
+- Direct, grounded, specific
+- Calm confidence, no hype
+- No corporate language, no buzzwords
+
+PERSONALIZATION:
+- Use candidate name only in: mindsetBanner and whatToDoNext
+- Everywhere else use "you"
+- Do not repeat the name more than once per field
+- Reference actual experience, not generic summaries
+
+STYLE:
+- Short to medium sentences
+- No em dashes
+- No filler phrases
+- No AI tone
+- No over-explaining
+
+CLARITY:
+- Every sentence must be easy to read on first pass
+- Avoid long dense sentences
+- Prefer clean, scannable phrasing
+- Make each bullet feel distinct and purposeful
+
+QUALITY BAR:
+- Replace vague statements with specific insight
+- Remove anything generic
+- Tone down anything exaggerated
+- Make it feel like it came from someone who actually reviewed the CV
+
+OUTPUT RULES:
+- Return ONLY valid JSON
+- Do not change structure or keys
+- Do not add or remove any JSON keys
+- No markdown, no backticks, no explanation
+
+TASK:
+Rewrite the provided JSON so it matches Perceive's tone, clarity, and readability standards.`;
+
+
+// ── refineOutput ──────────────────────────────────────────────
+function refineOutput(jsonStr, onSuccess, onError) {
+  const payload = JSON.stringify({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 2500,
+    system: REFINE_PROMPT,
+    messages: [{ role: "user", content: jsonStr }]
+  });
+
+  const options = {
+    hostname: "api.anthropic.com",
+    path: "/v1/messages",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+      "x-api-key": API_KEY,
+      "anthropic-version": "2023-06-01"
+    }
+  };
+
+  const req = https.request(options, res => {
+    const parts = [];
+    res.on("data", chunk => parts.push(chunk));
+    res.on("end", () => {
+      try {
+        const data = JSON.parse(Buffer.concat(parts).toString("utf8"));
+        const raw = (data.content || []).filter(b => b.type === "text").map(b => b.text || "").join("");
+        const stripped = raw.split("\n").filter(l => !l.trim().startsWith("```")).join("\n").trim();
+        const s = stripped.indexOf("{");
+        const e = stripped.lastIndexOf("}");
+        if (s === -1 || e === -1) { onError("No JSON in refine response"); return; }
+        onSuccess(stripped.slice(s, e + 1));
+      } catch (err) {
+        onError(err.message);
+      }
+    });
+  });
+
+  req.on("error", err => onError(err.message));
+  req.write(payload);
+  req.end();
+}
+
 const server = http.createServer((req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -104,13 +193,9 @@ const server = http.createServer((req, res) => {
     let cv, jd;
 
     try {
-const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-console.log("RAW BODY:", Buffer.concat(chunks).toString("utf8"));
-console.log("PARSED BODY:", body);
-console.log("CV RECEIVED LENGTH:", (body.cv || "").length);
-console.log("JD RECEIVED LENGTH:", (body.jd || "").length);
-      cv = (body.cv || "").trim();
-jd = (body.jd || "").trim();
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      cv = (body.cv || "").slice(0, 7000).trim();
+      jd = (body.jd || "").slice(0, 9000).trim();
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Invalid JSON" }));
@@ -185,9 +270,16 @@ jd = (body.jd || "").trim();
 
           const clean = stripped.slice(start, end + 1);
 
-          // Return clean JSON string in result field
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ result: clean }));
+          // Step 2: Refine with tone/clarity pass
+          refineOutput(clean, (refined) => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ result: refined }));
+          }, (err) => {
+            // If refine fails, return original
+            console.error("Refine failed, using original:", err);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ result: clean }));
+          });
 
         } catch (e) {
           console.error("Parse error:", e.message);
